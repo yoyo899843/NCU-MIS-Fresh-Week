@@ -1,0 +1,395 @@
+<!doctype html>
+<html lang="zh-Hant">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>大地圖 - 時空戰爭</title>
+<link rel="stylesheet" href="style.css">
+<link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css">
+<style>
+  /* 版面改成「上面一條 bar、下面整塊地圖」的正常排版，而不是把 bar 浮在地圖上。
+     原本 .top-bar 是 position:absolute 疊在地圖上，剛好壓住 Leaflet 左上角的
+     縮放 +/- 按鈕，放大縮小要盲點。改成正常流之後就不會互相蓋到。 */
+  html, body { height: 100%; }
+  body { max-width: none; padding: 0; margin: 0; display: flex; flex-direction: column; }
+  #map { flex: 1; min-height: 0; width: 100%; }
+  .legend { margin-top: 6px; font-size: 0.78rem; color: var(--dim); }
+  .legend span { margin-right: 10px; white-space: nowrap; }
+  .legend .sw {
+    display: inline-block; width: 10px; height: 10px; border-radius: 2px;
+    margin-right: 4px; vertical-align: -1px;
+  }
+  .legend .sw.done { background: var(--repair); }
+  .legend .sw.part { background: #3f7d63; }
+  .legend .sw.zero { background: #646c75; }
+
+  /* 據點標記：刻意做成方形資訊牌，跟玩家的圓點一眼就分得出來 */
+  .cp-marker {
+    background: var(--card); border: 2px solid var(--line); border-radius: 6px;
+    padding: 3px 6px; white-space: nowrap; text-align: center;
+    box-shadow: 0 1px 4px rgba(0,0,0,.3); font-size: 11px; line-height: 1.35;
+  }
+  /* 只有「已修復完成」才點亮外框——那是第一權重真正在數的東西，
+     中途進度用長度表示就好，不需要再多一種邊框顏色搶注意力。 */
+  .cp-marker.done { border-color: var(--repair); }
+  .cp-marker .cp-name { font-weight: 700; color: var(--fg); }
+  /* 修復進度條。整條就是 0~100%，沒有「另一邊」——破壞是把這條往回扣，
+     不是另一個陣營的長度（見 溫馨周企劃.pdf）。 */
+  .cp-marker .cp-bar {
+    display: block; min-width: 76px; height: 5px; margin: 3px 0 2px;
+    border-radius: 3px; overflow: hidden; background: var(--line);
+  }
+  .cp-marker .cp-bar > i { display: block; height: 100%; background: var(--repair); }
+  .cp-marker .cp-pct { font-variant-numeric: tabular-nums; color: var(--repair); font-weight: 700; }
+  .cp-marker .cp-pct.zero { color: var(--dim); }
+  .cp-marker .cp-done {
+    display: block; margin-top: 1px; font-size: 10px; font-weight: 700;
+    color: #05231a; background: var(--repair); border-radius: 3px; padding: 0 3px;
+  }
+
+  .top-bar {
+    flex: none;
+    background: var(--card);
+    border-bottom: 1px solid var(--line);
+    padding: 8px 12px;
+    font-size: 0.9rem;
+    display: flex; align-items: center; flex-wrap: wrap; gap: 4px 10px;
+  }
+  .top-bar .back {
+    color: var(--accent); text-decoration: none; font-weight: 700;
+    /* 手指點得到的大小，不要只有一行小字 */
+    padding: 4px 8px; margin: -4px 0 -4px -8px; border-radius: 4px;
+  }
+  .top-bar .back:hover, .top-bar .back:active { background: var(--card-3); }
+  .note-hint { font-size: 0.78rem; color: var(--accent); font-weight: 700; }
+
+  /* 其他隊伍點上的私有筆記。Leaflet tooltip 改成常駐的訊息框，尾端指向被記錄的
+     匿名圓點；這比把文字塞進很小的點或要求玩家再點一次直覺得多。 */
+  .leaflet-tooltip.team-note-bubble {
+    max-width: 132px; padding: 5px 7px; white-space: normal;
+    color: var(--fg); background: var(--card); border: 1px solid var(--accent);
+    border-radius: 7px; box-shadow: 0 2px 6px rgba(0, 0, 0, .35);
+    font-size: 12px; font-weight: 700; line-height: 1.35;
+  }
+  .leaflet-tooltip-top.team-note-bubble::before { border-top-color: var(--accent); }
+</style>
+</head>
+<body>
+<div class="top-bar">
+  <a class="back" href="index.html">&laquo; 回首頁</a>
+  <strong>大地圖</strong>
+  <span id="checkpointStatus"></span>
+  <span id="locationStatus"></span>
+  <span class="note-hint" id="noteHint">登入後可點選其他隊伍圖示新增筆記</span>
+  <div class="legend">
+    <span><i class="sw done"></i>已修復完成</span>
+    <span><i class="sw part"></i>修復中</span>
+    <span><i class="sw zero"></i>尚未修復</span>
+  </div>
+</div>
+<div id="map"></div>
+
+<script src="authFetch.js"></script>
+<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+<script src="geofence.js"></script>
+<script>
+const token = localStorage.getItem('playerToken');
+const playerInfo = JSON.parse(localStorage.getItem('playerInfo') || 'null');
+
+// 每 2 秒才動作一次——不是每次 GPS 更新就打一次 API，也不是即時推播：
+// 上傳自己的座標、以及跟伺服器要一次所有人目前的座標，都改成固定週期的 REST
+// 輪詢（見 src/routes/locations.js），不再用 Socket.IO。
+const LOCATION_INTERVAL_MS = 2000;
+
+// 遊戲範圍。數值跟 geofence.js 的 CAMPUS_BOUNDS 相同，但兩者是不同的東西：
+// 那邊管「離開這個範圍就不能玩」，這邊只拿來決定開場要框住哪一塊。
+const BOUNDS = L.latLngBounds(
+  [24.964764, 121.184735],
+  [24.972425, 121.197936]
+);
+
+// 地圖能拖到哪、能縮多小，取決於磁碟上真的有圖磚的範圍，跟遊戲範圍是兩回事。
+// scripts/download-tiles.js 是以 BOUNDS 去抓，但圖磚是切齊格線的，每一級實際
+// 蓋到的矩形都不一樣大（z15 往外多很多，z19 最貼）；能安全走動的只有「每一級
+// 都蓋得到」的交集，也就是 z19 那塊，再往內縮 3 公尺避開格線本身：
+//   lat 24.964273~24.972987, lng 121.184692~121.198425（z19 圖磚涵蓋範圍）
+// 這塊完整包住 BOUNDS，所以玩家看得到全部交摺點。圖磚重抓過的話這裡要一起改。
+//
+// 這組數字跟 src/campusBounds.js 的 CHECKPOINT_BOUNDS 必須一致——後台新增交摺點
+// 時就是拿那組值擋掉範圍外的座標，兩邊不同步的話會出現「後台存得進去、玩家的
+// 地圖卻拖不到」的點。這裡是靜態頁、沒辦法 require，只能手動保持一致。
+//
+// 原本這裡是 BOUNDS.pad(0.1)，四個方向都超出圖磚範圍，拖到邊緣就是一片空白。
+const TILE_BOUNDS = L.latLngBounds(
+  [24.964300, 121.184722],
+  [24.972960, 121.198396]
+);
+
+const map = L.map('map', {
+  maxZoom: 19,
+  maxBounds: TILE_BOUNDS,
+  maxBoundsViscosity: 1.0
+});
+
+// minZoom 是「最多能縮多小」。原本寫死 15，但 z15 的圖磚總共只有 512x512 px，
+// 鋪不滿一個螢幕——縮到底看到的是校園變一個小點、四周一大片灰，等於沒有下限。
+//
+// 正確的下限是「TILE_BOUNDS 剛好還鋪得滿整個畫面」的那一級，而它跟螢幕大小
+// 有關，不是固定值（#map 是 100vh，畫面多大就要鋪多大）：TILE_BOUNDS 在 z17
+// 是 1274x890 px，手機夠鋪滿，但 1440px 寬的桌機左右兩側就會露出灰邊。所以交
+// 給 Leaflet 依當下畫面去算（getBoundsZoom 第二個參數 inside=true 就是問「哪
+// 一級才能讓這塊範圍蓋滿整個畫面」），轉螢幕方向、改視窗大小時重算。
+function applyMinZoom() {
+  const fill = map.getBoundsZoom(TILE_BOUNDS, true);
+  map.setMinZoom(Math.min(fill, map.getMaxZoom()));
+}
+
+// 先算下限、再 fitBounds，順序不能反過來：fitBounds 是「把整塊範圍塞進畫面裡」，
+// 在還沒有下限的狀態下它會一路縮到 z15/z16，載入的瞬間就閃一下缺圖。
+applyMinZoom();
+map.fitBounds(BOUNDS);
+map.on('resize', applyMinZoom);
+// GPS 圍籬的提示條出現/消失會改變地圖容器的高度，但那不是視窗 resize，Leaflet
+// 不會自己發現，會繼續用舊尺寸繪製（底部露灰帶、點到的座標也會偏）。盯著容器
+// 本身，尺寸一變就叫 Leaflet 重新量。
+new ResizeObserver(() => map.invalidateSize()).observe(document.getElementById('map'));
+
+
+// 自行 host 的校園範圍 tile 圖磚（活動籌備期間用 scripts/download-tiles.js 下載），
+// 不對外連任何 tile server。
+// 這裡的 minZoom/maxZoom 說的是「磁碟上有哪幾級的圖磚」（download-tiles.js 抓了
+// 15~19），不是使用者能縮到哪——那個由上面 map 的 minZoom 決定。兩者刻意分開：
+// 小螢幕上 applyMinZoom 有可能算出 16，這一層要放得比它寬才不會整片空白。
+L.tileLayer('/tiles/{z}/{x}/{y}.png', {
+  minZoom: 15,
+  maxZoom: 19,
+  attribution: '&copy; OpenStreetMap contributors &copy; CARTO'
+}).addTo(map);
+
+// 交摺點：畫出位置，並用外框顏色 + 標籤直接標示目前是哪一邊領先。
+// 這支 API 不需要登入（交摺點戰況是公開資訊，大會投影 Dashboard 也用同一支）。
+const CHECKPOINT_INTERVAL_MS = 5000;
+const checkpointMarkers = new Map(); // checkpointId -> L.Marker
+const otherMarkers = new Map(); // 匿名隊伍 id -> L.CircleMarker
+const NOTE_MAX = 10;
+
+function escapeHtml(s) {
+  return String(s ?? '').replace(/[&<>"']/g, ch =>
+    ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[ch]));
+}
+
+// 每個據點只有一條修復進度（0~100%）。破壞不是「另一邊的長度」，而是把這條往回
+// 扣——所以這裡沒有兩色比例條，就是一條填到多少的進度條。
+//
+// 百分比數字仍然寫出來，不只靠長度：大太陽下的手機螢幕、色覺差異，長度不一定看
+// 得準，而「差一次修復就滿了」跟「還差兩次」對玩家的決策完全不同。
+function checkpointIcon(cp) {
+  const pct = Math.max(0, Math.min(100, Number(cp.progress) || 0));
+  const done = pct >= 100;
+  const html =
+    `<div class="cp-marker ${done ? 'done' : ''}">` +
+      `<span class="cp-name">${escapeHtml(cp.name)}</span>` +
+      `<span class="cp-bar"><i style="width:${pct}%"></i></span>` +
+      `<span class="cp-pct ${pct === 0 ? 'zero' : ''}">修復 ${pct}%</span>` +
+      (done ? '<span class="cp-done">已修復完成</span>' : '') +
+    `</div>`;
+  return L.divIcon({ html, className: '', iconSize: null, iconAnchor: [0, 0] });
+}
+
+function renderCheckpoints(list) {
+  const withCoords = list.filter(cp => cp.lat != null && cp.lng != null);
+  const missing = list.length - withCoords.length;
+  document.getElementById('checkpointStatus').textContent =
+    `（${list.length} 個交摺點${missing ? `，${missing} 個尚未設定座標` : ''}）`;
+
+  withCoords.forEach(cp => {
+    const existing = checkpointMarkers.get(cp.id);
+    if (existing) {
+      existing.setLatLng([cp.lat, cp.lng]);
+      existing.setIcon(checkpointIcon(cp));
+    } else {
+      // 交摺點壓在玩家標記底下（zIndexOffset 負值），才不會擋住走動中的隊伍
+      // 據點只顯示戰況，不再承載筆記；筆記改由其他隊伍的匿名位置點承載。
+      const marker = L.marker([cp.lat, cp.lng], {
+        icon: checkpointIcon(cp),
+        zIndexOffset: -500,
+        interactive: false
+      }).addTo(map);
+      checkpointMarkers.set(cp.id, marker);
+    }
+  });
+
+  // 已經不在清單裡的標記要拿掉。這張表只加不減的話，主辦在後台刪掉一個交摺點、
+  // 或把它的座標清空（還沒定好位置）之後，玩家的地圖上那顆點會一直留著——而且
+  // 進度永遠停在最後一次看到的數字，看起來像個沒人管的死點。
+  const alive = new Set(withCoords.map(cp => cp.id));
+  checkpointMarkers.forEach((marker, id) => {
+    if (!alive.has(id)) {
+      map.removeLayer(marker);
+      checkpointMarkers.delete(id);
+    }
+  });
+}
+
+// 點其他隊伍的匿名位置點就能新增筆記。筆記跟「那一支隊伍」關聯，而不是跟這次
+// GPS 座標綁死；即使它移動，訊息框仍會跟著它的點走。用原生 prompt 方便手機單手操作。
+async function editTeamNote(player) {
+  if (!token) return;
+  const current = player.note || '';
+  const input = window.prompt(`這支其他隊伍的筆記（最多 ${NOTE_MAX} 個字，只有你們這隊看得到）`, current);
+  if (input === null) return; // 按取消
+  const note = input.trim();
+  if (Array.from(note).length > NOTE_MAX) {
+    alert(`最多 ${NOTE_MAX} 個字`);
+    return;
+  }
+
+  const res = await fetch(`/api/notes/${encodeURIComponent(player.id)}`, {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json', Authorization: 'Bearer ' + token },
+    body: JSON.stringify({ note })
+  });
+  if (!res.ok) {
+    const data = await res.json().catch(() => ({}));
+    alert(data.error || '筆記儲存失敗');
+    return;
+  }
+  player.note = note || null;
+  const marker = otherMarkers.get(player.id);
+  if (marker) updateOtherTooltip(marker, player);
+}
+
+// live=false 時，用最後上傳時間（updatedAt）換算成「X 分鐘前」；剛斷線不到
+// 一分鐘先顯示「剛離線」，不然會一直卡在「0 分鐘前」很奇怪。
+function statusText(player) {
+  if (player.live) return '現在';
+  const minutes = Math.floor((Date.now() - player.updatedAt) / 60000);
+  return minutes < 1 ? '剛離線' : `${minutes} 分鐘前`;
+}
+
+function updateOtherTooltip(marker, player) {
+  const status = `其他隊伍（${statusText(player)}）`;
+  const note = player.note || '';
+  const signature = `${note}\u0000${status}`;
+  if (marker.__tooltipSignature === signature) return;
+  marker.__tooltipSignature = signature;
+  marker.unbindTooltip();
+
+  if (note) {
+    marker.bindTooltip(escapeHtml(note), {
+      permanent: true, direction: 'top', offset: [0, -10], opacity: 1,
+      className: 'team-note-bubble'
+    });
+  } else {
+    marker.bindTooltip(status);
+  }
+}
+
+function loadCheckpoints() {
+  fetch('/api/map/checkpoints')
+    .then(res => (res.ok ? res.json() : Promise.reject(res.status)))
+    .then(renderCheckpoints)
+    .catch(() => {
+      document.getElementById('checkpointStatus').textContent = '（交摺點載入失敗）';
+    });
+}
+
+loadCheckpoints();
+setInterval(loadCheckpoints, CHECKPOINT_INTERVAL_MS);
+
+// 自己的位置：不用等伺服器回應，收到 GPS 更新的當下直接畫在地圖上，
+// 用跟其他人不同的樣式（藍色圓點）分辨。
+let selfMarker = null;
+function updateSelfMarker(lat, lng) {
+  if (!selfMarker) {
+    selfMarker = L.circleMarker([lat, lng], {
+      radius: 8,
+      color: '#06c',
+      fillColor: '#06c',
+      fillOpacity: 0.9
+    }).addTo(map).bindTooltip('你的位置', { permanent: true });
+  } else {
+    selfMarker.setLatLng([lat, lng]);
+  }
+}
+
+function clearSelfMarker() {
+  if (!selfMarker) return;
+  map.removeLayer(selfMarker);
+  selfMarker = null;
+}
+
+if (token && playerInfo) {
+  document.getElementById('locationStatus').textContent = '（定位分享中）';
+  document.getElementById('noteHint').textContent = '點選其他隊伍圖示即可新增／修改筆記（僅你們這隊可見）';
+
+  // 大地圖上其他隊伍一律是「匿名圓點」：同一種顏色、沒有代號、沒有陣營。
+  // 這是遊戲機制的一部分而不是隱私考量——玩家要靠「某據點進度驟降」搭配「當時
+  // 停留在那裡的圓點」自己推理內鬼身分（見 溫馨周企劃.pdf）。標記如果寫著隊名
+  // 跟陣營，抓內鬼這件事就不用玩了。伺服器端也不會發出這些欄位，見
+  // src/playerLocations.js。
+  //
+  // 座標刻意不落地到 DB，但關掉瀏覽器/斷線也不會讓標記消失：伺服器一直保留每支
+  // 隊伍最後一次回報的座標，只是標記會從「連線中」（實心）變成「離線」（半透明），
+  // 見下面的 live 欄位。軌跡要連得起來，所以每筆帶一個匿名 id 當標記的鍵。
+  const OTHER_COLOR = '#8fa3b8'; // 中性灰藍，跟自己的藍點、跟兩個陣營色都不撞
+
+  // 目前收到的最新一次 GPS 讀值，每 2 秒的上傳計時器讀這個變數，
+  // 跟 geofence.js 實際多快收到新讀值（可能比 2 秒快很多）脫鉤。
+  let latestCoords = null;
+  startGeofence((lat, lng, accuracy) => {
+    latestCoords = { lat, lng, accuracy };
+    updateSelfMarker(lat, lng);
+  }, () => {
+    latestCoords = null;
+    clearSelfMarker();
+  });
+
+  setInterval(() => {
+    if (!latestCoords) return;
+    fetch('/api/locations', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Authorization: 'Bearer ' + token },
+      body: JSON.stringify(latestCoords)
+    }).catch(() => {}); // 單次上傳失敗不用特別處理，反正 2 秒後會再傳一次
+  }, LOCATION_INTERVAL_MS);
+
+  setInterval(() => {
+    fetch('/api/locations', { headers: { Authorization: 'Bearer ' + token } })
+      .then(res => res.json())
+      .then(players => {
+        // 這裡回來的名單不會因為斷線而少人，所以不用做「消失名單裡沒有的標記」
+        // 那種清理——每個人只會一直被更新（位置 + 連線狀態），不會被移除。
+        players.forEach(p => {
+          // 自己不在這份清單裡（伺服器就沒回），所以不用另外過濾。
+          //
+          // 沒有筆記時 tooltip 不常駐，避免二十顆點都掛標籤把地圖糊掉；有筆記時
+          // 才改成常駐訊息框，讓玩家一眼看到自己的觀察。
+          let marker = otherMarkers.get(p.id);
+          if (!marker) {
+            marker = L.circleMarker([p.lat, p.lng], {
+              radius: 8,
+              color: OTHER_COLOR,
+              fillColor: OTHER_COLOR,
+              fillOpacity: p.live ? 0.85 : 0.35
+            }).addTo(map);
+            marker.__player = p;
+            marker.on('click', () => editTeamNote(marker.__player));
+            otherMarkers.set(p.id, marker);
+          } else {
+            marker.setLatLng([p.lat, p.lng]);
+            marker.setStyle({ fillOpacity: p.live ? 0.85 : 0.35 });
+            marker.__player = p;
+          }
+          updateOtherTooltip(marker, p);
+        });
+      })
+      .catch(() => {});
+  }, LOCATION_INTERVAL_MS);
+} else {
+  document.getElementById('locationStatus').textContent = '（未登入，不分享/顯示其他人的定位）';
+  startGeofence(updateSelfMarker, clearSelfMarker);
+}
+</script>
+</body>
+</html>

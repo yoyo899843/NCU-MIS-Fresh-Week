@@ -1,0 +1,96 @@
+<!doctype html>
+<html lang="zh-Hant">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>玩家登入 - 時空戰爭</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<h1>加入時空戰爭</h1>
+<div class="card" id="loginCard">
+  <input id="displayName" placeholder="輸入你的代號/姓名（最多 10 個字）" maxlength="10">
+  <p class="hint">代號只能用中英文字、數字與 emoji，不能有空白或標點符號。</p>
+  <input id="pin" type="tel" placeholder="設定 4 碼 PIN（掉線/換手機用同一組代號+PIN 找回身份）" maxlength="4" inputmode="numeric" pattern="[0-9]*" enterkeyhint="done" aria-label="設定 4 碼數字 PIN">
+  <p class="hint">PIN 僅限數字；請記得切換輸入法為英文／數字鍵盤。</p>
+  <button id="joinBtn">加入時空戰爭</button>
+  <p id="result" class="error"></p>
+</div>
+<div class="card" id="loggedInCard" style="display:none">
+  <p id="who"></p>
+  <p class="nav"><a href="index.html">進入遊戲</a></p>
+  <button id="logoutBtn">登出</button>
+</div>
+
+<script>
+const existing = localStorage.getItem('playerToken');
+const existingPlayer = localStorage.getItem('playerInfo');
+if (existing && existingPlayer) {
+  showLoggedIn(JSON.parse(existingPlayer));
+}
+
+function showLoggedIn(info) {
+  document.getElementById('loginCard').style.display = 'none';
+  document.getElementById('loggedInCard').style.display = '';
+
+  // 陣營在「開始遊戲」時才抽，抽完會在首頁彈窗公布，這一頁不重複顯示——
+  // 這裡拿到的 info 是登入當下的快照，抽籤之後就過期了。
+  const teamNo = info.team.teamNumber ?? info.team.id;
+  document.getElementById('who').textContent =
+    `${info.player.displayName}（隊伍 #${teamNo}）`;
+}
+
+// PIN 輸入當下就擋掉非數字字元（不管是打字還是貼上），不是等送出才檢查格式。
+document.getElementById('pin').addEventListener('input', e => {
+  e.target.value = e.target.value.replace(/\D/g, '').slice(0, 4);
+});
+
+document.getElementById('joinBtn').addEventListener('click', async () => {
+  const displayName = document.getElementById('displayName').value.trim();
+  const pin = document.getElementById('pin').value.trim();
+  const resultEl = document.getElementById('result');
+
+  if (!displayName) {
+    resultEl.textContent = '請輸入代號/姓名';
+    return;
+  }
+  // 跟伺服器同一套規則（src/displayName.js 的 NAME_PATTERN）。這裡只是先給
+  // 即時回饋，真正說了算的是伺服器——直接打 API 一樣會被擋。
+  if (!/^[\p{L}\p{Nd}\p{Extended_Pictographic}\p{Emoji_Modifier}\p{Regional_Indicator}\u200D\uFE0F\u20E3]+$/u.test(displayName)) {
+    resultEl.textContent = '代號只能用中英文字、數字與 emoji，不能有空白或標點符號';
+    return;
+  }
+  if (!/^\d{4}$/.test(pin)) {
+    resultEl.textContent = 'PIN 要剛好 4 碼數字';
+    return;
+  }
+
+  try {
+    const res = await fetch('/api/auth/join', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ displayName, pin })
+    });
+    const data = await res.json();
+    if (res.ok) {
+      resultEl.textContent = '';
+      localStorage.setItem('playerToken', data.token);
+      localStorage.setItem('playerInfo', JSON.stringify({ player: data.player, team: data.team }));
+      showLoggedIn(data);
+    } else {
+      resultEl.textContent = `加入失敗 (${res.status}): ${data.error || ''}`;
+    }
+  } catch (err) {
+    resultEl.textContent = '連線失敗: ' + err.message;
+  }
+});
+
+document.getElementById('logoutBtn').addEventListener('click', () => {
+  localStorage.removeItem('playerToken');
+  localStorage.removeItem('playerInfo');
+  location.reload();
+});
+</script>
+<script src="footer.js"></script>
+</body>
+</html>

@@ -1,0 +1,394 @@
+<!doctype html>
+<html lang="zh-Hant">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>PK 對戰管理 - 時空戰爭管理後台</title>
+<link rel="stylesheet" href="../style.css">
+<style>
+  body { max-width: 900px; }
+  table { width: 100%; border-collapse: collapse; margin-top: 8px; }
+  th, td { border: 1px solid var(--line); padding: 6px 8px; text-align: left; font-size: 0.85rem; }
+  th { background: var(--card-2); }
+  .tag { display: inline-block; padding: 2px 6px; border-radius: 4px; font-size: 0.75rem; color: #fff; }
+  .tag-repair { background: #2a6dd1; }
+  .tag-disrupt { background: #c0392b; }
+  .tag-waiting { background: #626b75; color:#fff; }
+  .tag-active { background: #2a7d2a; color:#fff; }
+  .tag-completed { background: #555; color:#fff; }
+  .tag-cancelled { background: #7a4b00; color:#fff; }
+  table button { width: auto; padding: 4px 8px; }
+  .row-actions button { width: auto; display: inline-block; padding: 4px 8px; margin: 0 4px 0 0; }
+  .options-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+  select { display: block; width: 100%; padding: 8px; margin-bottom: 8px; }
+  .bank-status { font-size: 0.9rem; margin: 0 0 8px; }
+  .bank-status.warn { color: var(--accent); }
+  .bank-status.bad { color: var(--danger); }
+</style>
+</head>
+<body>
+<h1>PK 對戰管理</h1>
+<p class="nav">
+  <a href="index.html">&laquo; 回管理後台</a>
+  <a href="#bank">跳到題庫</a>
+  <a href="#wins">跳到勝場統計</a>
+  <a href="#duels">跳到對戰紀錄</a>
+  <a href="questions.html">交摺點／通用題庫</a>
+</p>
+
+<!-- 設定 → 題庫 → 對戰紀錄。
+     設定放最前面是因為下面「題庫夠不夠」的判斷就是拿「一場抽幾題」當基準算的，
+     兩者放在一起才看得出關聯（原本設定在後台首頁、題庫在這頁，改一個要跳兩頁）。 -->
+<div class="card admin-only" id="settings" style="display:none">
+  <h2>PK 對戰設定</h2>
+  <label for="pkQuestions">一場抽幾題（1～20）</label>
+  <input id="pkQuestions" type="number" min="1" max="20" inputmode="numeric">
+  <label for="pkSeconds">每題作答時間（秒，3～120）</label>
+  <input id="pkSeconds" type="number" min="3" max="120" inputmode="numeric">
+  <button id="pkSettingsBtn">儲存設定</button>
+  <p class="hint">只影響之後才開始的對戰。正在進行中的那場是開場時就把題目和秒數決定好放在記憶體裡的，不會被中途換掉。</p>
+  <p class="hint">秒數是統一的，不是逐題設定：PK 是兩個人同步比快慢，每題長度必須一致才公平——照各題自己的秒數跑的話，抽到哪幾題會直接影響整場長度。</p>
+  <p id="pkSettingsResult" class="error"></p>
+</div>
+
+<div class="card" id="bank">
+  <h2>PK 題庫</h2>
+  <p id="bankStatus" class="bank-status">載入中...</p>
+  <p class="hint">PK 只會從這裡的題目抽題，不會抽到通用題庫或交摺點專屬題目。</p>
+</div>
+
+<div class="card">
+  <h3 id="formTitle">新增 PK 題目</h3>
+  <input id="content" placeholder="題目內容">
+  <div class="options-grid">
+    <input id="optionA" placeholder="選項 A">
+    <input id="optionB" placeholder="選項 B">
+    <input id="optionC" placeholder="選項 C">
+    <input id="optionD" placeholder="選項 D">
+  </div>
+  <select id="correctOption">
+    <option value="A">正確答案：A</option>
+    <option value="B">正確答案：B</option>
+    <option value="C">正確答案：C</option>
+    <option value="D">正確答案：D</option>
+  </select>
+  <button id="saveBtn">新增 PK 題目</button>
+  <button id="cancelEditBtn" style="display:none">取消編輯</button>
+  <p id="formResult" class="error"></p>
+</div>
+
+<div class="card">
+  <h3>CSV 批次匯入（全部匯成 PK 題目）</h3>
+  <p style="font-size:0.85rem">欄位格式：題目, 選項A, 選項B, 選項C, 選項D, 正確選項。從這裡上傳的每一列都會直接歸成 PK 專用，不用再填歸屬欄。</p>
+  <p class="nav"><a href="sample-pk-questions.csv" download>下載 PK 範例 CSV</a></p>
+  <input type="file" id="csvFile" accept=".csv">
+  <button id="importBtn">上傳匯入</button>
+  <p id="importResult"></p>
+</div>
+
+<div class="card">
+  <h3>PK 題目清單</h3>
+  <table>
+    <thead>
+      <tr><th>題目</th><th>選項</th><th>正確答案</th><th></th></tr>
+    </thead>
+    <tbody id="questionsBody"></tbody>
+  </table>
+</div>
+
+<div class="card" id="wins">
+  <h2>各隊 PK 勝場</h2>
+  <p id="winsSummary" class="hint">載入中...</p>
+  <table>
+    <thead>
+      <tr><th>名次</th><th>隊伍</th><th>勝場</th></tr>
+    </thead>
+    <tbody id="winsBody"></tbody>
+  </table>
+</div>
+
+<div class="card" id="duels">
+  <h2>對戰紀錄</h2>
+  <button id="refreshBtn">重新整理</button>
+  <table>
+    <thead>
+      <tr>
+        <th>房號</th>
+        <th>對戰雙方</th>
+        <th>狀態</th>
+        <th>勝負</th>
+        <th>建立時間</th>
+      </tr>
+    </thead>
+    <tbody id="duelsBody"></tbody>
+  </table>
+</div>
+
+<script src="../authFetch.js"></script>
+<script src="adminApi.js"></script>
+<script>
+
+/* ---------------- PK 題庫 ---------------- */
+
+let editingId = null;
+let pkQuestions = [];
+let questionsPerDuel = null; // 後台設定的「一場抽幾題」，用來判斷題庫夠不夠
+
+// 題庫夠不夠是這一頁最值得先講的事：PK 抽不到題會直接開不了場（createSession 會丟
+// 'no PK questions available'），題目比一場要抽的少則會安靜地打成短局，兩種都不會有人
+// 主動來回報，所以放在最上面直接算給人看。
+function renderBankStatus() {
+  const el = document.getElementById('bankStatus');
+  const n = pkQuestions.length;
+  if (n === 0) {
+    el.className = 'bank-status bad';
+    el.textContent = '目前沒有任何 PK 題目，玩家會完全發不起對戰。請先新增題目。';
+    return;
+  }
+  if (questionsPerDuel != null && n < questionsPerDuel) {
+    el.className = 'bank-status warn';
+    el.textContent = `目前 ${n} 題，但一場要抽 ${questionsPerDuel} 題——題目不夠，對戰只會出 ${n} 題就結束。`;
+    return;
+  }
+  el.className = 'bank-status';
+  el.textContent = questionsPerDuel != null
+    ? `目前 ${n} 題，一場抽 ${questionsPerDuel} 題。`
+    : `目前 ${n} 題。`;
+}
+
+async function loadPkSettings() {
+  // 關主沒有讀 game/state 的權限，拿不到就只是少顯示「一場抽幾題」，不擋整頁。
+  try {
+    const res = await api('/game/state');
+    if (!res.ok) return;
+    const state = await res.json();
+    if (state.pk_questions_per_duel != null) {
+      questionsPerDuel = Number(state.pk_questions_per_duel);
+      document.getElementById('pkQuestions').value = state.pk_questions_per_duel;
+    }
+    if (state.pk_answer_seconds != null) {
+      document.getElementById('pkSeconds').value = state.pk_answer_seconds;
+    }
+  } catch (err) {
+    /* 忽略：關主讀不到 game/state，只是少顯示輔助資訊，不擋整頁 */
+  }
+}
+
+document.getElementById('pkSettingsBtn').addEventListener('click', async () => {
+  const res = await apiJson('/game/pk-settings', 'PATCH', {
+    questionsPerDuel: Number(document.getElementById('pkQuestions').value),
+    answerSeconds: Number(document.getElementById('pkSeconds').value)
+  });
+  const data = await res.json();
+  if (!res.ok) { showMsg('pkSettingsResult', data.error || `失敗 (${res.status})`, false); return; }
+
+  // 改完立刻重算題庫夠不夠。把「一場抽幾題」從 5 調到 15 而題庫只有 8 題的話，
+  // 上面那行警告必須馬上跟著變——不然會以為存好了、其實對戰會打成短局。
+  questionsPerDuel = Number(data.pk_questions_per_duel);
+  document.getElementById('pkQuestions').value = data.pk_questions_per_duel;
+  document.getElementById('pkSeconds').value = data.pk_answer_seconds;
+  renderBankStatus();
+  showMsg('pkSettingsResult', '已儲存。', true);
+});
+
+async function loadQuestions() {
+  // /questions 回傳整個題庫（通用＋交摺點＋PK），這一頁只留 PK 的。題目總數是幾百筆
+  // 等級，沒必要為了這個再開一支帶篩選的 API。
+  const res = await api('/questions');
+  const all = await res.json();
+  pkQuestions = all.filter(q => q.scope_type === 'pk');
+
+  document.getElementById('questionsBody').innerHTML = pkQuestions.map(q => `
+    <tr>
+      <td>${escapeHtml(q.content)}</td>
+      <td style="color:var(--dim)">
+        A. ${escapeHtml(q.option_a)}　B. ${escapeHtml(q.option_b)}<br>
+        C. ${escapeHtml(q.option_c)}　D. ${escapeHtml(q.option_d)}
+      </td>
+      <td>${escapeHtml(q.correct_option)}</td>
+      <td class="row-actions">
+        <button onclick="startEdit(${q.id})">編輯</button>
+        <button onclick="deleteQuestion(${q.id})">刪除</button>
+      </td>
+    </tr>
+  `).join('') || '<tr><td colspan="4">目前沒有 PK 題目</td></tr>';
+
+  renderBankStatus();
+}
+
+function resetForm() {
+  editingId = null;
+  document.getElementById('formTitle').textContent = '新增 PK 題目';
+  document.getElementById('saveBtn').textContent = '新增 PK 題目';
+  document.getElementById('cancelEditBtn').style.display = 'none';
+  document.getElementById('content').value = '';
+  document.getElementById('optionA').value = '';
+  document.getElementById('optionB').value = '';
+  document.getElementById('optionC').value = '';
+  document.getElementById('optionD').value = '';
+  document.getElementById('correctOption').value = 'A';
+}
+
+window.startEdit = function (id) {
+  const q = pkQuestions.find(x => x.id === id);
+  if (!q) return;
+  editingId = id;
+  document.getElementById('formTitle').textContent = `編輯 PK 題目 #${id}`;
+  document.getElementById('saveBtn').textContent = '更新題目';
+  document.getElementById('cancelEditBtn').style.display = '';
+  document.getElementById('content').value = q.content;
+  document.getElementById('optionA').value = q.option_a;
+  document.getElementById('optionB').value = q.option_b;
+  document.getElementById('optionC').value = q.option_c;
+  document.getElementById('optionD').value = q.option_d;
+  document.getElementById('correctOption').value = q.correct_option;
+  window.scrollTo(0, 0);
+};
+
+window.deleteQuestion = async function (id) {
+  if (!confirm('確定要刪除這一題嗎？')) return;
+  const res = await api(`/questions/${id}`, { method: 'DELETE' });
+  if (!res.ok && res.status !== 204) {
+    const data = await res.json().catch(() => ({}));
+    alert(data.error || `刪除失敗 (${res.status})`);
+    return;
+  }
+  if (editingId === id) resetForm();
+  await loadQuestions();
+};
+
+document.getElementById('cancelEditBtn').addEventListener('click', resetForm);
+
+document.getElementById('saveBtn').addEventListener('click', async () => {
+  const resultEl = document.getElementById('formResult');
+  const body = {
+    scopeType: 'pk',
+    checkpointId: null,
+    content: document.getElementById('content').value.trim(),
+    optionA: document.getElementById('optionA').value.trim(),
+    optionB: document.getElementById('optionB').value.trim(),
+    optionC: document.getElementById('optionC').value.trim(),
+    optionD: document.getElementById('optionD').value.trim(),
+    correctOption: document.getElementById('correctOption').value,
+    // 後端仍要求正整數秒數，但 PK 實際跑的是後台設定的值（createSession 會蓋掉）。
+    // 這裡沿用編輯中那題原本的秒數，新增則給 10，避免無謂地改動既有資料。
+    timeLimitSeconds: (editingId && pkQuestions.find(q => q.id === editingId)?.time_limit_seconds) || 10
+  };
+
+  const res = await api(editingId ? `/questions/${editingId}` : '/questions', {
+    method: editingId ? 'PATCH' : 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body)
+  });
+  const data = await res.json();
+  if (!res.ok) {
+    resultEl.textContent = data.error || `失敗 (${res.status})`;
+    return;
+  }
+  resultEl.textContent = '';
+  resetForm();
+  await loadQuestions();
+});
+
+document.getElementById('importBtn').addEventListener('click', async () => {
+  const fileInput = document.getElementById('csvFile');
+  const resultEl = document.getElementById('importResult');
+  if (!fileInput.files[0]) {
+    resultEl.textContent = '請先選擇 CSV 檔案';
+    resultEl.className = 'error';
+    return;
+  }
+
+  const formData = new FormData();
+  formData.append('file', fileInput.files[0]);
+  formData.append('forceScope', 'pk'); // 從這一頁上傳的一律歸成 PK，忽略 CSV 裡的歸屬欄
+
+  const res = await api('/questions/import', { method: 'POST', body: formData });
+  const data = await res.json();
+  if (!res.ok) {
+    // 整份檔案解析不下去時，後端會附上 hint（怎麼修）以及在出錯之前已經寫進去
+    // 的筆數。只顯示 error 的話，使用者會以為完全沒有匯入、然後整份重傳一次，
+    // 結果前面那幾筆變成重複的題目。
+    resultEl.textContent = (data.error || `失敗 (${res.status})`) +
+      (data.hint ? '　' + data.hint : '') +
+      (data.inserted ? `　（出錯之前已成功匯入 ${data.inserted} 筆，重新上傳前請先把這幾筆從檔案裡移除，否則會重複）` : '');
+    resultEl.className = 'error';
+    await loadQuestions();
+    return;
+  }
+  resultEl.className = '';
+  resultEl.textContent = `匯入完成：成功 ${data.inserted} 筆，失敗 ${data.failed.length} 筆。` +
+    (data.failed.length ? ' 失敗原因：' + data.failed.map(f => f.reason).join('；') : '');
+  await loadQuestions();
+});
+
+/* ---------------- 對戰紀錄 ---------------- */
+
+const factionLabel = f => f === 'repair' ? '修復者' : f === 'disrupt' ? '破壞者' : f;
+const statusLabel = s => ({ waiting: '等待配對', active: '進行中', completed: '已結束', cancelled: '已取消' }[s] || s);
+
+function renderResult(d) {
+  if (d.status !== 'completed') return '-';
+  const nameOf = playerId => playerId === d.host_player_id ? d.host_name : d.guest_name;
+  return `勝：${escapeHtml(nameOf(d.winner_player_id))}　敗：${escapeHtml(nameOf(d.loser_player_id))}`;
+}
+
+function renderWins(teams) {
+  let previousWins = null;
+  let displayedRank = 0;
+
+  document.getElementById('winsBody').innerHTML = teams.map((team, index) => {
+    const wins = Number(team.wins) || 0;
+    if (wins !== previousWins) displayedRank = index + 1;
+    previousWins = wins;
+    return `
+      <tr>
+        <td>${displayedRank}</td>
+        <td>${escapeHtml(team.display_name || `第 ${team.team_number} 隊`)}
+          <span class="tag tag-${team.faction}">${factionLabel(team.faction)}</span></td>
+        <td>${wins}</td>
+      </tr>
+    `;
+  }).join('') || '<tr><td colspan="3">目前沒有隊伍資料</td></tr>';
+
+  const completedWins = teams.reduce((total, team) => total + (Number(team.wins) || 0), 0);
+  document.getElementById('winsSummary').textContent = `已完成 PK：${completedWins} 場；未獲勝的隊伍也會列在榜上。`;
+}
+
+async function loadWins() {
+  const res = await api('/pk-wins');
+  renderWins(await res.json());
+}
+
+async function loadDuels() {
+  const res = await api('/pk-duels');
+  const duels = await res.json();
+  document.getElementById('duelsBody').innerHTML = duels.map(d => `
+    <tr>
+      <td>${escapeHtml(d.room_code)}</td>
+      <td>
+        ${escapeHtml(d.host_name)} <span class="tag tag-${d.host_faction}">${factionLabel(d.host_faction)}</span>
+        vs
+        ${escapeHtml(d.guest_name || '(尚未加入)')} ${d.guest_faction ? `<span class="tag tag-${d.guest_faction}">${factionLabel(d.guest_faction)}</span>` : ''}
+      </td>
+      <td><span class="tag tag-${d.status}">${statusLabel(d.status)}</span></td>
+      <td>${renderResult(d)}</td>
+      <td>${new Date(d.created_at).toLocaleString()}</td>
+    </tr>
+  `).join('') || '<tr><td colspan="5">目前沒有任何 PK 對戰紀錄</td></tr>';
+}
+
+document.getElementById('refreshBtn').addEventListener('click', async () => {
+  await Promise.all([loadWins(), loadDuels()]);
+});
+
+(async () => {
+  await loadMe();          // 決定「PK 對戰設定」那張卡要不要顯示（關主看不到）
+  await loadPkSettings();
+  await loadQuestions();
+  await Promise.all([loadWins(), loadDuels()]);
+})();
+</script>
+<script src="../footer.js"></script>
+</body>
+</html>

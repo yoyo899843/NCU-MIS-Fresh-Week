@@ -1,0 +1,311 @@
+<!doctype html>
+<html lang="zh-Hant">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>玩家帳號管理 - 時空戰爭管理後台</title>
+<link rel="stylesheet" href="../style.css">
+<style>
+  body { max-width: 900px; }
+  table { width: 100%; border-collapse: collapse; margin-top: 8px; }
+  th, td { border: 1px solid var(--line); padding: 6px 8px; text-align: left; font-size: 0.85rem; }
+  th { background: var(--card-2); }
+  .tag { display: inline-block; padding: 2px 6px; border-radius: 4px; font-size: 0.75rem; color: #fff; }
+  .tag-repair { background: #2a6dd1; }
+  .tag-disrupt { background: #c0392b; }
+  .tag-captain { background: #626b75; margin-left: 4px; }
+  .pin-form { display: flex; gap: 4px; align-items: center; }
+  .pin-form input { width: 70px; padding: 4px; margin: 0; }
+  .pin-form button { width: auto; padding: 4px 8px; }
+  .pin-msg { font-size: 0.75rem; }
+  .pin-msg.ok { color: var(--repair); }
+  .pin-msg.error { color: var(--disrupt); }
+  .faction-form { display: flex; gap: 4px; align-items: center; }
+  .faction-form select { padding: 4px; margin: 0; }
+  .faction-form button { width: auto; padding: 4px 8px; }
+  .faction-msg { font-size: 0.75rem; }
+  .faction-msg.ok { color: var(--repair); }
+  .faction-msg.error { color: var(--disrupt); }
+  .new-form { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }
+  .new-form input { width: 200px; margin: 0; }
+  .new-form input#newPin { width: 100px; }
+  .new-form select { width: auto; margin: 0; }
+  .new-form button { width: auto; margin: 0; }
+  .del-btn { width: auto; padding: 4px 8px; background: var(--disrupt); color: #2b0006; }
+  .del-msg { font-size: 0.75rem; }
+  .del-msg.error { color: var(--disrupt); }
+</style>
+</head>
+<body>
+<h1>玩家帳號管理</h1>
+<p class="nav"><a href="index.html">&laquo; 回管理後台</a></p>
+
+<div class="card">
+  <h3>新增隊伍</h3>
+  <div class="new-form">
+    <input id="newName" maxlength="10" placeholder="隊伍代號（最多 10 字）">
+    <input id="newPin" inputmode="numeric" maxlength="4" placeholder="4 碼 PIN">
+    <select id="newFaction">
+      <option value="">陣營：開賽時抽籤決定</option>
+      <option value="repair">指定為時空保衛隊</option>
+      <option value="disrupt">指定為黑暗潛伏者</option>
+    </select>
+    <button id="createBtn">新增</button>
+  </div>
+  <p class="hint">代號只能用中英文字、數字與 emoji。玩家用同一組代號＋PIN 登入。陣營通常不用選——主辦按「開始遊戲」時會從所有隊伍中隨機抽出破壞者。只有在遊戲已經開始之後才補建的隊伍需要手動指定，因為抽籤已經過去了。</p>
+  <p id="drawNote" class="hint" style="color:var(--accent)"></p>
+  <p id="createMsg" class="pin-msg"></p>
+</div>
+
+<div class="card">
+  <input id="searchInput" placeholder="搜尋代號...">
+  <button id="refreshBtn">重新整理</button>
+  <table>
+    <thead>
+      <tr>
+        <th>隊伍</th>
+        <th>代號</th>
+        <th>PIN 碼</th>
+        <th>加入時間</th>
+        <th>重設 PIN</th>
+        <th>調整陣營</th>
+        <th>刪除</th>
+      </tr>
+    </thead>
+    <tbody id="playersBody"></tbody>
+  </table>
+</div>
+
+<script src="../authFetch.js"></script>
+<script>
+const token = localStorage.getItem('adminToken');
+if (!token) location.href = 'login.html';
+
+async function api(path, options = {}) {
+  const res = await fetch('/admin/api' + path, {
+    ...options,
+    headers: { Authorization: 'Bearer ' + token, ...(options.headers || {}) }
+  });
+  if (res.status === 401) {
+    localStorage.removeItem('adminToken');
+    location.href = 'login.html';
+    throw new Error('unauthorized');
+  }
+  return res;
+}
+
+const factionLabel = f => f === 'repair' ? '保衛隊' : f === 'disrupt' ? '潛伏者' : f;
+
+// 陣營是「開始遊戲」時才抽的（見 admin.js 的 /game/start）。抽籤之前 teams.faction
+// 全部都是 repair 佔位值，照著顯示會讓人以為已經分好了、而且全場都是好人。
+let factionDrawn = false;
+
+let players = [];
+
+function renderRows() {
+  const keyword = document.getElementById('searchInput').value.trim();
+  const filtered = keyword ? players.filter(p => p.display_name.includes(keyword)) : players;
+
+  document.getElementById('playersBody').innerHTML = filtered.map(p => `
+    <tr>
+      <td>
+        ${factionDrawn
+          ? `<span class="tag tag-${p.faction}">${factionLabel(p.faction)} ${p.team_number}</span>`
+          : `<span class="tag">未抽籤 ${p.team_number}</span>`}
+        ${p.is_captain ? '<span class="tag tag-captain">隊長</span>' : ''}
+      </td>
+      <td>${escapeHtml(p.display_name)}</td>
+      <td><code>${escapeHtml(p.pin || '(未設定)')}</code></td>
+      <td>${new Date(p.created_at).toLocaleString()}</td>
+      <td>
+        <div class="pin-form">
+          <input id="pinInput-${p.id}" inputmode="numeric" pattern="\\d*" maxlength="4" placeholder="新 PIN">
+          <button onclick="resetPin(${p.id})">覆蓋</button>
+        </div>
+        <div class="pin-msg" id="pinMsg-${p.id}"></div>
+      </td>
+      <td>
+        <div class="faction-form">
+          <select id="factionInput-${p.id}">
+            <option value="repair" ${p.faction === 'repair' ? 'selected' : ''}>修復者</option>
+            <option value="disrupt" ${p.faction === 'disrupt' ? 'selected' : ''}>破壞者</option>
+          </select>
+          <button onclick="changeFaction(${p.id})">變更</button>
+        </div>
+        <div class="faction-msg" id="factionMsg-${p.id}"></div>
+      </td>
+      <td>
+        <button class="del-btn" onclick="removePlayer(${p.id})">刪除</button>
+        <div class="del-msg" id="delMsg-${p.id}"></div>
+      </td>
+    </tr>
+  `).join('') || '<tr><td colspan="7">目前沒有任何玩家</td></tr>';
+
+  // 只允許輸入數字，跟玩家登入頁的 PIN 輸入限制一致。
+  filtered.forEach(p => {
+    const input = document.getElementById(`pinInput-${p.id}`);
+    input?.addEventListener('input', () => {
+      input.value = input.value.replace(/\D/g, '').slice(0, 4);
+    });
+  });
+}
+
+function escapeHtml(str) {
+  const div = document.createElement('div');
+  div.textContent = str ?? '';
+  return div.innerHTML;
+}
+
+async function loadPlayers() {
+  // 先問抽籤狀態再畫，否則第一次繪製會把所有隊伍都標成「保衛隊」——
+  // 抽籤前 faction 全是佔位值，那個畫面是假的。
+  try {
+    const st = await api('/game/state');
+    if (st.ok) {
+      const s = await st.json();
+      factionDrawn = !!s.faction_drawn_at;
+      document.getElementById('drawNote').textContent = factionDrawn
+        ? ''
+        : '陣營尚未抽籤，下面顯示的陣營一律是「未抽籤」。按下管理後台的「開始遊戲」才會抽。';
+    }
+  } catch (e) { /* 關主權限拿不到遊戲狀態，就維持未抽籤的保守顯示 */ }
+
+  const res = await api('/players');
+  players = await res.json();
+  renderRows();
+}
+
+window.resetPin = async function (playerId) {
+  const input = document.getElementById(`pinInput-${playerId}`);
+  const msgEl = document.getElementById(`pinMsg-${playerId}`);
+  const pin = input.value;
+
+  if (!/^\d{4}$/.test(pin)) {
+    msgEl.textContent = 'PIN 必須是 4 位數字';
+    msgEl.className = 'pin-msg error';
+    return;
+  }
+  if (!confirm(`確定要把這位玩家的 PIN 覆蓋成 ${pin} 嗎？`)) return;
+
+  const res = await api(`/players/${playerId}/pin`, {
+    method: 'PATCH',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ pin })
+  });
+  const data = await res.json();
+  if (!res.ok) {
+    msgEl.textContent = data.error || `失敗 (${res.status})`;
+    msgEl.className = 'pin-msg error';
+    return;
+  }
+  msgEl.textContent = '已更新';
+  msgEl.className = 'pin-msg ok';
+  await loadPlayers();
+};
+
+// 人工調整隊伍陣營：改的是這位玩家所屬「隊伍」的陣營，不是玩家個人的欄位——
+// 現在一隊剛好只有一個玩家，所以介面上看起來像是在改玩家，實際上後端動的是
+// teams.faction（見 admin.js 的 PATCH /players/:id/faction）。
+window.changeFaction = async function (playerId) {
+  const select = document.getElementById(`factionInput-${playerId}`);
+  const msgEl = document.getElementById(`factionMsg-${playerId}`);
+  const faction = select.value;
+  const factionText = faction === 'repair' ? '修復者' : '破壞者';
+
+  if (!confirm(`確定要把這支隊伍改成「${factionText}」陣營嗎？`)) return;
+
+  const res = await api(`/players/${playerId}/faction`, {
+    method: 'PATCH',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ faction })
+  });
+  const data = await res.json();
+  if (!res.ok) {
+    msgEl.textContent = data.error || `失敗 (${res.status})`;
+    msgEl.className = 'faction-msg error';
+    return;
+  }
+  msgEl.textContent = '已更新';
+  msgEl.className = 'faction-msg ok';
+  await loadPlayers();
+};
+
+// 刪除分兩段。
+//
+// 第一次直接刪：還沒有任何紀錄的隊伍（報名鍵錯、多開一支）就這樣沒了，這是
+// 現場最常見的情況。有紀錄的隊伍後端會回 409 + needsForce，這時候把「會連帶
+// 刪掉什麼」講清楚再問一次，確認了才帶 force=1 重送。
+//
+// 為什麼要有 force：主辦說「每個帳號都要能刪」。單純擋住等於刪不掉，只是把
+// 問題丟回給人。但代價是真的存在——這支隊伍打過的 PK 也是對手的勝場，刪掉
+// 對手的積分會跟著少，所以不能默默做，要讓按的人知道自己在刪什麼。
+window.removePlayer = async function (playerId, force) {
+  const player = players.find(p => p.id === playerId);
+  const name = player ? player.display_name : playerId;
+  const msgEl = document.getElementById(`delMsg-${playerId}`);
+  msgEl.textContent = '';
+  msgEl.className = 'del-msg';
+
+  if (!force && !confirm(`確定要刪除「${name}」這支隊伍嗎？此動作無法復原。`)) return;
+
+  const res = await api(`/players/${playerId}${force ? '?force=1' : ''}`, { method: 'DELETE' });
+  if (res.status === 204) { await loadPlayers(); return; }
+
+  const data = await res.json().catch(() => ({}));
+
+  if (res.status === 409 && data.needsForce) {
+    const r = data.records || {};
+    const ok = confirm(
+      `「${name}」已經有比賽紀錄：\n` +
+      `　關卡挑戰 ${r.attempts} 筆\n　PK 對戰 ${r.duels} 場\n　任務 ${r.missions} 則\n\n` +
+      '連同這些紀錄一起刪除的話，對手的 PK 勝場也會跟著減少，積分與名次會改變。\n' +
+      '（如果只是要讓他們登不進來，取消後改 PIN 就好。）\n\n確定要連紀錄一起刪除嗎？'
+    );
+    if (!ok) { msgEl.textContent = '已取消。'; return; }
+    return removePlayer(playerId, true);
+  }
+
+  msgEl.textContent = data.error || `失敗 (${res.status})`;
+  msgEl.className = 'del-msg error';
+};
+
+document.getElementById('newPin').addEventListener('input', e => {
+  e.target.value = e.target.value.replace(/\D/g, '').slice(0, 4);
+});
+
+document.getElementById('createBtn').addEventListener('click', async () => {
+  const msgEl = document.getElementById('createMsg');
+  msgEl.textContent = '';
+  msgEl.className = 'pin-msg';
+
+  const body = {
+    displayName: document.getElementById('newName').value.trim(),
+    pin: document.getElementById('newPin').value,
+    faction: document.getElementById('newFaction').value || undefined
+  };
+
+  const res = await api('/players', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body)
+  });
+  const data = await res.json();
+  if (!res.ok) {
+    msgEl.textContent = data.error || `失敗 (${res.status})`;
+    msgEl.className = 'pin-msg error';
+    return;
+  }
+  msgEl.textContent = `已新增「${data.display_name}」（${factionLabel(data.faction)} ${data.team_number}）`;
+  msgEl.className = 'pin-msg ok';
+  document.getElementById('newName').value = '';
+  document.getElementById('newPin').value = '';
+  await loadPlayers();
+});
+
+document.getElementById('refreshBtn').addEventListener('click', loadPlayers);
+document.getElementById('searchInput').addEventListener('input', renderRows);
+loadPlayers();
+</script>
+<script src="../footer.js"></script>
+</body>
+</html>

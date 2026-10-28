@@ -1,0 +1,334 @@
+<!doctype html>
+<html lang="zh-Hant">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>時空戰爭</title>
+<link rel="stylesheet" href="style.css">
+<style>
+  .badge {
+    display: inline-block; font-size: 0.8rem; font-weight: 700;
+    background: var(--accent); color: #1a0f00; border-radius: 10px; padding: 1px 8px;
+  }
+  .mission { border: 1px solid var(--line); border-radius: 6px; padding: 10px; margin-bottom: 10px; }
+  .mission.done { opacity: .55; }
+  .mission .meta { font-size: 0.8rem; color: var(--dim); }
+  .mission .body { margin: 6px 0; white-space: pre-wrap; }
+  .mission .row { display: flex; gap: 8px; }
+  .mission .row input { flex: 1; margin: 0; text-transform: uppercase; }
+  .mission .row button { width: auto; margin: 0; white-space: nowrap; }
+  .mission .state-done { color: var(--repair); font-weight: 700; }
+  /* 新任務彈窗 */
+  .modal {
+    position: fixed; inset: 0; z-index: 500; display: flex;
+    align-items: center; justify-content: center; padding: 20px;
+    background: rgba(7, 11, 16, .82);
+  }
+  .modal .box {
+    background: var(--card); border: 2px solid var(--accent); border-radius: 8px;
+    padding: 18px; max-width: 420px; width: 100%;
+  }
+  .modal h3 { margin-top: 0; }
+  /* 陣營揭曉的彈窗。刻意做得比任務彈窗更醒目——這是整場只會看到一次的訊息，
+     被當成一般通知滑掉的話，玩家整場都不知道自己是哪一邊。 */
+  .modal .box.faction { text-align: center; }
+  .faction-name { font-size: 1.6rem; font-weight: 800; margin: 10px 0; }
+  .faction-repair { color: var(--repair); }
+  .faction-disrupt { color: var(--disrupt); }
+  .box.faction.repair { border-color: var(--repair); }
+  .box.faction.disrupt { border-color: var(--disrupt); }
+  .secret { font-size: 0.85rem; color: var(--accent); font-weight: 700; }
+</style>
+</head>
+<body>
+<h1>時空戰爭</h1>
+
+<div id="loading" class="card">
+  <p class="hint">載入中...</p>
+</div>
+
+<div id="notLoggedIn" class="card" style="display:none">
+  <p>到各個時空據點完成關卡，決定要修復還是破壞；路上遇到其他小隊可以發起 PK 對戰。</p>
+  <p class="nav"><a href="login.html">玩家登入</a></p>
+  <p class="hint">一支隊伍用一支手機登入。掉線或換手機時，用同一組代號＋PIN 就能拿回原本的身分。</p>
+</div>
+
+<div id="dashboard" class="card" style="display:none">
+  <p id="who"></p>
+  <p class="nav">
+    <a href="map.html">大地圖</a>
+    <a href="pk.html">PK 對戰</a>
+    <a href="vote.html" id="voteLink" style="display:none">最終審判 · 指認內鬼</a>
+  </p>
+  <button id="logoutBtn">登出</button>
+</div>
+
+<div id="missionCard" class="card" style="display:none">
+  <h3>任務信箱 <span id="missionCount" class="badge"></span></h3>
+  <div id="missionList"></div>
+  <p id="missionResult" class="error"></p>
+</div>
+
+<!-- 工作人員入口單獨一張卡，跟玩家的功能分開，也不跟著登入狀態顯示/隱藏：
+     大螢幕是投影用的、管理後台是主辦用的，兩者都不需要玩家帳號。 -->
+<div class="card">
+  <p class="nav">
+    <a href="dashboard.html">大螢幕戰況</a>
+    <a href="admin/login.html">管理後台</a>
+  </p>
+  <p class="hint">工作人員專用：投影畫面與主辦後台。</p>
+</div>
+
+<script src="authFetch.js"></script>
+<script>
+const token = localStorage.getItem('playerToken');
+const playerInfo = JSON.parse(localStorage.getItem('playerInfo') || 'null');
+
+const show = id => { document.getElementById(id).style.display = ''; };
+const hide = id => { document.getElementById(id).style.display = 'none'; };
+
+const FACTION_LABEL = { repair: '時空保衛隊', disrupt: '黑暗潛伏者' };
+
+// 目前這支隊伍的狀態（陣營現在是伺服器現查的，不再從 localStorage 讀——
+// 陣營會在主辦按下「開始遊戲」時整批重抽，本機那份一定是舊的）。
+let me = null;
+
+function showLoggedIn() {
+  hide('loading');
+  show('dashboard');
+
+  const name = playerInfo.player.displayName;
+  const teamNo = (me && me.teamNumber) || playerInfo.team.teamNumber || playerInfo.team.id;
+
+  // 還沒抽籤就講清楚「還沒公布」，不要留白讓人以為壞掉，也不要拿一個佔位值
+  // 湊數——伺服器在抽籤前根本不會回 faction。
+  const factionText = (me && me.factionRevealed)
+    ? FACTION_LABEL[me.faction]
+    : '陣營未公布';
+
+  document.getElementById('who').textContent = `${name}（${factionText}　隊伍 #${teamNo}）`;
+}
+
+if (!token || !playerInfo) {
+  hide('loading');
+  show('notLoggedIn');
+} else {
+  // 只看 localStorage 有沒有東西就顯示「已登入」是不夠的：token 過期不會讓
+  // localStorage 自動清空，結果會一直停在已登入的畫面，要等玩家點進某個功能
+  // 才被 authFetch.js 攔下 401 踢出去。這裡主動確認一次 token 還有效。
+  refreshMe().then(ok => {
+    if (window.__authRedirecting) return;
+    showLoggedIn();
+    if (!ok) return; // 連線問題：先用本機資料顯示，不要因為一次失敗就把人擋在外面
+    loadMissions();
+    refreshVoteLink();
+    // 主辦是手動派發/開投票/開始遊戲的，不會有固定節奏，固定週期問一次就好
+    setInterval(loadMissions, 5000);
+    setInterval(refreshVoteLink, 5000);
+    setInterval(refreshMe, 5000);
+  });
+}
+
+// 抽籤是主辦在後台按的，玩家端沒有別的方式知道。這支同時負責三件事：
+// 確認 token 還有效、拿到最新的陣營、在抽籤發生時把彈窗跳出來。
+async function refreshMe() {
+  try {
+    const res = await fetch('/api/auth/me', { headers: { Authorization: 'Bearer ' + token } });
+    if (res.status === 401) {
+      // 帳號沒了（主辦重啟遊戲會清掉所有隊伍）或 token 過期，回登入頁重來
+      localStorage.removeItem('playerToken');
+      localStorage.removeItem('playerInfo');
+      localStorage.removeItem(SEEN_KEY);
+      location.href = 'login.html';
+      return false;
+    }
+    if (!res.ok) return false;
+    me = await res.json();
+    showLoggedIn();
+    maybeShowFaction();
+    return true;
+  } catch (e) {
+    return false; // 網路暫時不通
+  }
+}
+
+// 「這一次抽籤」有沒有給這台裝置看過。用抽籤時間當記號而不是布林值：主辦重開
+// 一場就會重抽一次，時間戳跟著變，彈窗會再跳一次；同一場之內重整頁面則不會
+// 一直重複跳。
+const SEEN_FACTION_KEY = 'seenFactionDraw';
+function maybeShowFaction() {
+  if (!me || !me.factionRevealed) return;
+  const stamp = String(me.factionDrawnAt);
+  let seen = null;
+  try { seen = localStorage.getItem(SEEN_FACTION_KEY); } catch (e) { /* 無痕模式等 */ }
+  if (seen === stamp) return;
+  try { localStorage.setItem(SEEN_FACTION_KEY, stamp); } catch (e) { /* 同上 */ }
+  showFactionModal(me.faction);
+}
+
+function showFactionModal(faction) {
+  const isSpy = faction === 'disrupt';
+  const box = document.createElement('div');
+  box.className = 'modal';
+  box.innerHTML =
+    `<div class="box faction ${isSpy ? 'disrupt' : 'repair'}">` +
+      '<h3>你的陣營</h3>' +
+      `<p class="faction-name ${isSpy ? 'faction-disrupt' : 'faction-repair'}">${FACTION_LABEL[faction]}</p>` +
+      (isSpy
+        ? '<p>你們是潛伏在隊伍中的內鬼。目標是破壞據點的修復進度，並且不要被指認出來。</p>' +
+          '<p class="secret">別讓其他隊伍看到這個畫面。</p>'
+        : '<p>你們的目標是修復時空據點，並且在最終審判找出隱藏在其中的內鬼。</p>') +
+      '<button>我知道了</button>' +
+    '</div>';
+  box.querySelector('button').addEventListener('click', () => box.remove());
+  document.body.appendChild(box);
+}
+
+// 最終審判的入口平常不顯示——投票沒開放的時候點進去也只是看到「還沒開始」，
+// 放著只會讓人一直點。開放了才浮出來，順便當成「該去投票了」的提示。
+async function refreshVoteLink() {
+  try {
+    const res = await fetch('/api/votes', { headers: { Authorization: 'Bearer ' + token } });
+    if (!res.ok) return;
+    const data = await res.json();
+    document.getElementById('voteLink').style.display =
+      (data.open && data.canVote) ? '' : 'none';
+  } catch (e) { /* 連線問題就維持原狀 */ }
+}
+
+/* ---------------- 任務信箱 ---------------- */
+
+function escapeHtml(s) {
+  return String(s ?? '').replace(/[&<>"']/g, c =>
+    ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+}
+
+// 已經彈過視窗的任務 id。存在 localStorage 而不是記憶體：玩家在頁面之間跳來跳去，
+// 每次回首頁都重新彈一次同一個任務會很煩。
+const SEEN_KEY = 'seenMissionIds';
+function seenIds() {
+  try { return new Set(JSON.parse(localStorage.getItem(SEEN_KEY) || '[]')); }
+  catch (e) { return new Set(); }
+}
+function markSeen(ids) {
+  try { localStorage.setItem(SEEN_KEY, JSON.stringify([...ids])); } catch (e) { /* 無痕模式等 */ }
+}
+
+function showMissionModal(mission) {
+  const box = document.createElement('div');
+  box.className = 'modal';
+  box.innerHTML =
+    '<div class="box">' +
+      '<h3>收到新任務</h3>' +
+      (mission.checkpoint_name ? `<p class="hint">接受點位：${escapeHtml(mission.checkpoint_name)}</p>` : '') +
+      `<p style="white-space:pre-wrap">${escapeHtml(mission.content)}</p>` +
+      '<p class="hint">完成後向關主領取解鎖碼，回到任務信箱輸入即可結案。</p>' +
+      '<button>知道了</button>' +
+    '</div>';
+  box.querySelector('button').addEventListener('click', () => box.remove());
+  document.body.appendChild(box);
+}
+
+function renderMissions(list) {
+  document.getElementById('missionCard').style.display = '';
+  const open = list.filter(m => m.status === 'open');
+  const badge = document.getElementById('missionCount');
+  badge.textContent = open.length ? `${open.length} 則待完成` : '';
+  badge.style.display = open.length ? '' : 'none';
+
+  if (list.length === 0) {
+    document.getElementById('missionList').innerHTML =
+      '<p class="hint">目前沒有任務。主辦派發時會跳出通知。</p>';
+    return;
+  }
+
+  // 這一段每 5 秒會被輪詢呼叫一次。整塊 innerHTML 重畫會把使用者正在輸入解鎖碼
+  // 的那個 input 換成新的元素，焦點跟著沒了——手機/平板的鍵盤就會收起來，打到
+  // 一半根本輸入不完。
+  //
+  // 所以先比對「畫面真的有變嗎」，沒變就整段不動。任務內容不會自己改，會變的只有
+  // 清單本身（新任務、結案、取消），用這些欄位組一個簽章比對就夠。
+  const sig = list.map(m => `${m.id}:${m.status}`).join('|');
+  const listEl = document.getElementById('missionList');
+  if (listEl.dataset.sig === sig) return;
+
+  // 真的有變才重畫（例如剛收到新任務）。這種時候還是會掉焦點，所以把使用者已經
+  // 打到一半的內容和游標位置記下來，重畫後補回去。
+  const active = document.activeElement;
+  const keepId = active && active.id && active.id.startsWith('code-') ? active.id : null;
+  const typed = {};
+  listEl.querySelectorAll('input[id^="code-"]').forEach(i => { if (i.value) typed[i.id] = i.value; });
+  const caret = keepId ? [active.selectionStart, active.selectionEnd] : null;
+
+  listEl.dataset.sig = sig;
+  listEl.innerHTML = list.map(m => {
+    const done = m.status !== 'open';
+    return `<div class="mission ${done ? 'done' : ''}">
+      <div class="meta">${new Date(m.created_at).toLocaleString()}` +
+        (m.checkpoint_name ? `　接受點位：${escapeHtml(m.checkpoint_name)}` : '') + `</div>
+      <div class="body">${escapeHtml(m.content)}</div>` +
+      (done
+        ? `<div class="state-done">${m.status === 'completed' ? '已完成' : '已取消'}</div>`
+        : `<div class="row">
+             <input id="code-${m.id}" placeholder="向關主領取解鎖碼" maxlength="12">
+             <button onclick="completeMission(${m.id})">結案</button>
+           </div>`) +
+    `</div>`;
+  }).join('');
+
+  // 把剛才記下來的輸入內容補回去，再把焦點還給原本那一格。
+  Object.entries(typed).forEach(([id, v]) => {
+    const el = document.getElementById(id);
+    if (el) el.value = v;
+  });
+  if (keepId) {
+    const el = document.getElementById(keepId);
+    if (el) {
+      el.focus();
+      try { el.setSelectionRange(caret[0], caret[1]); } catch (e) { /* 某些瀏覽器不支援 */ }
+    }
+  }
+}
+
+window.completeMission = async function (id) {
+  const el = document.getElementById('missionResult');
+  el.textContent = '';
+  const code = document.getElementById('code-' + id).value.trim();
+  if (!code) { el.textContent = '請輸入解鎖碼'; return; }
+
+  const res = await fetch(`/api/missions/${id}/complete`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', Authorization: 'Bearer ' + token },
+    body: JSON.stringify({ code })
+  });
+  const data = await res.json();
+  if (!res.ok) { el.textContent = data.error || `失敗 (${res.status})`; return; }
+  el.textContent = '';
+  await loadMissions();
+};
+
+async function loadMissions() {
+  const res = await fetch('/api/missions', { headers: { Authorization: 'Bearer ' + token } });
+  if (!res.ok) return;
+  const list = await res.json();
+  renderMissions(list);
+
+  // 新的未完成任務才彈窗。第一次載入時把既有任務全部標記成看過，
+  // 不然重新登入會一口氣彈出一整串舊任務。
+  const seen = seenIds();
+  const fresh = list.filter(m => m.status === 'open' && !seen.has(m.id));
+  const first = seen.size === 0 && localStorage.getItem(SEEN_KEY) === null;
+  list.forEach(m => seen.add(m.id));
+  markSeen(seen);
+  if (!first) fresh.forEach(showMissionModal);
+}
+
+document.getElementById('logoutBtn').addEventListener('click', () => {
+  localStorage.removeItem('playerToken');
+  localStorage.removeItem('playerInfo');
+  location.reload();
+});
+</script>
+<script src="footer.js"></script>
+</body>
+</html>

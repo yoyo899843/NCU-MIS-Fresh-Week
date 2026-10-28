@@ -1,0 +1,303 @@
+<!doctype html>
+<html lang="zh-Hant">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>交摺點管理 - 時空戰爭</title>
+<link rel="stylesheet" href="../style.css">
+<style>
+  body { max-width: 900px; }
+  table { width: 100%; border-collapse: collapse; margin-top: 8px; font-size: 0.9rem; }
+  th, td { border: 1px solid var(--line); padding: 6px 8px; text-align: left; vertical-align: top; }
+  th { background: var(--card-2); }
+  td.n { text-align: right; font-variant-numeric: tabular-nums; }
+  .v-repair { color: var(--repair); font-weight: bold; }
+  .v-disrupt { color: var(--disrupt); font-weight: bold; }
+  .lead { font-size: 0.75rem; padding: 1px 7px; border-radius: 999px; color: #fff; }
+  .lead.repair { background: #0d7550; }
+  .lead.disrupt { background: #c0392b; }
+  .lead.tie { background: #646c75; }
+  .row-actions button, .row-actions a {
+    width: auto; display: inline-block; padding: 3px 8px; margin: 0 4px 4px 0; font-size: 0.85rem;
+  }
+  .token { font-family: ui-monospace, Menlo, monospace; font-size: 0.75rem; color: var(--dim); }
+  .form-row { display: flex; gap: 8px; flex-wrap: wrap; }
+  .form-row input, .form-row select { flex: 1; min-width: 130px; width: auto; }
+  .hint { font-size: 0.85rem; color: var(--dim); }
+</style>
+</head>
+<body>
+<h1>交摺點管理</h1>
+<p class="nav"><a href="index.html">&laquo; 回管理後台</a></p>
+
+<div class="card">
+  <h3>新增交摺點</h3>
+  <div class="form-row">
+    <input id="newName" placeholder="名稱（例如 資訊圖書館）">
+    <input id="newLat" placeholder="緯度 lat（例如 24.968）" inputmode="decimal">
+    <input id="newLng" placeholder="經度 lng（例如 121.191）" inputmode="decimal">
+  </div>
+  <button id="createBtn">新增</button>
+  <p class="hint">關卡由關主在現場主持，過關後到「關主現場操作」記錄結果，玩家端沒有掃碼流程。</p>
+  <p class="hint" id="boundsHint">座標有效範圍載入中...</p>
+  <p id="createResult" class="error"></p>
+</div>
+
+<div class="card">
+  <h3>交摺點清單</h3>
+  <table>
+    <thead>
+      <tr><th>名稱</th><th>座標</th><th>修復進度</th><th>操作</th></tr>
+    </thead>
+    <tbody id="tbody"></tbody>
+  </table>
+  <p id="result" class="error"></p>
+</div>
+
+<div class="card">
+  <h3>手動設定修復進度</h3>
+  <p class="hint">關主現場操作以外的補救手段（判定爭議、關主代為記錄）。直接填最終的進度百分比 0～100，不是增減值。</p>
+  <div class="form-row">
+    <select id="ovCheckpoint"></select>
+    <input id="ovProgress" type="number" min="0" max="100" placeholder="修復進度 %（0～100）" inputmode="numeric">
+    <input id="ovNote" placeholder="備註（選填，會記進稽核）">
+  </div>
+  <button id="ovBtn">送出</button>
+  <p id="ovResult" class="error"></p>
+</div>
+
+<script src="../authFetch.js"></script>
+<script>
+const token = localStorage.getItem('adminToken');
+if (!token) location.href = 'login.html';
+
+const $ = id => document.getElementById(id);
+
+async function api(path, options = {}) {
+  const res = await fetch('/admin/api' + path, {
+    ...options,
+    headers: { Authorization: 'Bearer ' + token, ...(options.headers || {}) }
+  });
+  if (res.status === 401) {
+    localStorage.removeItem('adminToken');
+    location.href = 'login.html';
+    throw new Error('unauthorized');
+  }
+  return res;
+}
+
+function escapeHtml(s) {
+  return String(s ?? '').replace(/[&<>"']/g, c =>
+    ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+}
+
+// 據點只有一條 0~100% 的修復進度，破壞是把它往回扣，不是另一個陣營的分數。
+function progressOf(cp) {
+  const pct = Math.max(0, Math.min(100, Number(cp.progress) || 0));
+  if (pct >= 100) return { pct, cls: 'repair', text: '已修復完成' };
+  if (pct > 0) return { pct, cls: 'tie', text: '修復中' };
+  return { pct, cls: 'tie', text: '尚未修復' };
+}
+
+// 有效範圍由伺服器給（src/campusBounds.js 的 CHECKPOINT_BOUNDS），不寫死在這頁。
+// 寫死的話，之後換場地重抓圖磚就會留下一個沒人記得要改、看起來又很像真的的提示。
+let bounds = null;
+
+async function loadBounds() {
+  try {
+    const res = await api('/checkpoint-bounds');
+    if (!res.ok) return;
+    bounds = await res.json();
+    $('boundsHint').textContent =
+      `座標必須在地圖範圍內：緯度 ${bounds.minLat}～${bounds.maxLat}、` +
+      `經度 ${bounds.minLng}～${bounds.maxLng}。超出範圍的點玩家在地圖上看不到。`;
+  } catch (e) {
+    $('boundsHint').textContent = '';
+  }
+}
+
+// 送出前先在本機擋一次，只是為了少一次來回並且立刻給回饋；
+// 真正說了算的是伺服器（見 admin.js 的 checkInsideMap）。
+// 回傳錯誤訊息字串，沒問題就回 null。
+function coordProblem(latRaw, lngRaw) {
+  if (latRaw === '' && lngRaw === '') return null;          // 都不填＝還沒定位
+  if ((latRaw === '') !== (lngRaw === '')) return '經度和緯度要一起填（或一起留空）';
+
+  const lat = Number(latRaw), lng = Number(lngRaw);
+  if (!Number.isFinite(lat) || !Number.isFinite(lng)) return '經緯度必須是數字';
+  if (!bounds) return null;                                  // 範圍還沒載到就交給伺服器擋
+
+  const inside = (a, b) =>
+    a >= bounds.minLat && a <= bounds.maxLat && b >= bounds.minLng && b <= bounds.maxLng;
+  if (inside(lat, lng)) return null;
+  if (inside(lng, lat)) return `緯度和經度好像對調了——把 ${lng} 填緯度、${lat} 填經度試試。`;
+  return `座標超出地圖範圍，這個點玩家會看不到。有效範圍：緯度 ${bounds.minLat}～${bounds.maxLat}、經度 ${bounds.minLng}～${bounds.maxLng}。`;
+}
+
+async function load() {
+  const res = await api('/checkpoints');
+  if (res.status === 403) {
+    $('tbody').innerHTML = '<tr><td colspan="4">你目前是關主，沒有權限管理交摺點。</td></tr>';
+    return;
+  }
+  const list = await res.json();
+
+  $('tbody').innerHTML = list.map(cp => {
+    const prog = progressOf(cp);
+    const coords = (cp.map_lat == null || cp.map_lng == null)
+      ? '<span class="error">尚未設定</span>'
+      : `${cp.map_lat}, ${cp.map_lng}`;
+    return `
+    <tr id="row-${cp.id}">
+      <td>${escapeHtml(cp.name)}</td>
+      <td>${coords}</td>
+      <td class="n">
+        <span class="v-repair">${prog.pct}%</span><br>
+        <span class="lead ${prog.cls}">${prog.text}</span>
+      </td>
+      <td class="row-actions">
+        <button onclick="editCp(${cp.id})">編輯</button>
+        <button onclick="resetCp(${cp.id})">歸零</button>
+        <button onclick="deleteCp(${cp.id})">刪除</button>
+      </td>
+    </tr>`;
+  }).join('') || '<tr><td colspan="4">目前沒有交摺點，先在上面新增。</td></tr>';
+
+  $('ovCheckpoint').innerHTML = list.map(cp =>
+    `<option value="${cp.id}">${escapeHtml(cp.name)}</option>`).join('');
+
+  window.__checkpoints = list;
+}
+
+$('createBtn').addEventListener('click', async () => {
+  $('createResult').className = 'error';
+  $('createResult').textContent = '';
+
+  const problem = coordProblem($('newLat').value.trim(), $('newLng').value.trim());
+  if (problem) { $('createResult').textContent = problem; return; }
+
+  const res = await api('/checkpoints', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      name: $('newName').value.trim(),
+      mapLat: $('newLat').value.trim(),
+      mapLng: $('newLng').value.trim()
+    })
+  });
+  const data = await res.json();
+  if (!res.ok) { $('createResult').textContent = data.error || `失敗 (${res.status})`; return; }
+  $('newName').value = ''; $('newLat').value = ''; $('newLng').value = '';
+  await load();
+});
+
+// 編輯改成直接在表格列上填欄位，不再用三個連續的 prompt()。
+//
+// prompt 那版有兩個現場很致命的問題：一是三個對話框只要中途按取消就整筆放棄、
+// 前面打的白費；二是手機/平板上 prompt 的輸入框看不到目前地圖長怎樣，也沒辦法
+// 貼上「24.968, 121.191」這種從 Google 地圖複製來的格式。
+window.editCp = function (id) {
+  const cp = (window.__checkpoints || []).find(c => c.id === id);
+  const row = document.getElementById('row-' + id);
+  if (!cp || !row) return;
+
+  row.innerHTML = `
+    <td><input id="e-name-${id}" value="${escapeHtml(cp.name)}" style="width:100%"></td>
+    <td>
+      <div class="form-row">
+        <input id="e-lat-${id}" value="${cp.map_lat ?? ''}" placeholder="緯度 lat" inputmode="decimal">
+        <input id="e-lng-${id}" value="${cp.map_lng ?? ''}" placeholder="經度 lng" inputmode="decimal">
+      </div>
+      <p class="hint" style="margin:4px 0 0">可以直接把 Google 地圖的「24.968, 121.191」貼進緯度欄，會自動拆開。</p>
+    </td>
+    <td class="n">${progressOf(cp).pct}%</td>
+    <td class="row-actions">
+      <button onclick="saveCp(${id})">儲存</button>
+      <button class="ghost" onclick="load()">取消</button>
+    </td>`;
+
+  // 貼上「lat, lng」一次填好兩格：現場設點就是從地圖複製一整組座標，
+  // 要人手動拆成兩半再貼兩次，很容易貼錯欄位（經緯度顛倒的話點會跑到別的國家）。
+  const latEl = document.getElementById(`e-lat-${id}`);
+  latEl.addEventListener('input', () => {
+    const m = latEl.value.match(/^\s*(-?\d+(?:\.\d+)?)\s*[,\s]\s*(-?\d+(?:\.\d+)?)\s*$/);
+    if (m) {
+      latEl.value = m[1];
+      document.getElementById(`e-lng-${id}`).value = m[2];
+    }
+  });
+  latEl.focus();
+};
+
+window.saveCp = async function (id) {
+  $('result').className = 'error';
+  const name = document.getElementById(`e-name-${id}`).value.trim();
+  const lat = document.getElementById(`e-lat-${id}`).value.trim();
+  const lng = document.getElementById(`e-lng-${id}`).value.trim();
+
+  if (!name) { $('result').textContent = '名稱不能空白'; return; }
+
+  // 只填一個的話，存出來會是「新緯度配舊經度」，點會落在完全錯的地方，而且畫面
+  // 上看起來像存成功了。範圍檢查同理——打錯一位數存得進去，但玩家的地圖拖不到。
+  const problem = coordProblem(lat, lng);
+  if (problem) { $('result').textContent = problem; return; }
+
+  const res = await api(`/checkpoints/${id}`, {
+    method: 'PATCH',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ name, mapLat: lat, mapLng: lng })
+  });
+  const data = await res.json();
+  if (!res.ok) { $('result').textContent = data.error || `失敗 (${res.status})`; return; }
+  $('result').textContent = '';
+  await load();
+};
+
+window.resetCp = async function (id) {
+  if (!confirm('確定要把這個交摺點的修復值/破壞值歸零嗎？\n（挑戰紀錄會保留，只是分數歸零）')) return;
+  const res = await api(`/checkpoints/${id}/reset`, { method: 'POST' });
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) { $('result').textContent = data.error || `失敗 (${res.status})`; return; }
+  $('result').textContent = '';
+  await load();
+};
+
+window.deleteCp = async function (id) {
+  if (!confirm('確定要刪除這個交摺點嗎？')) return;
+  const res = await api(`/checkpoints/${id}`, { method: 'DELETE' });
+  if (res.status === 204) { $('result').textContent = ''; await load(); return; }
+  const data = await res.json().catch(() => ({}));
+  $('result').textContent = data.error || `失敗 (${res.status})`;
+};
+
+// 這張表單原本打的是 /overrides/score 並送 { faction, delta }，那是舊的雙分數
+// 模型留下來的——後端在改成單一 0~100 進度時就換成 /overrides/progress 了，
+// 這一支早就 404（而且被 app.js 的 API 404 handler 接住，只回一句 not found）。
+$('ovBtn').addEventListener('click', async () => {
+  $('ovResult').className = 'error';
+  $('ovResult').textContent = '';
+  const raw = $('ovProgress').value.trim();
+  if (raw === '') { $('ovResult').textContent = '請填修復進度（0～100）'; return; }
+
+  const res = await api('/overrides/progress', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      checkpointId: Number($('ovCheckpoint').value),
+      progress: Number(raw),
+      note: $('ovNote').value.trim() || null
+    })
+  });
+  const data = await res.json();
+  if (!res.ok) { $('ovResult').textContent = data.error || `失敗 (${res.status})`; return; }
+  $('ovProgress').value = ''; $('ovNote').value = '';
+  $('ovResult').className = 'hint';
+  $('ovResult').textContent = `已將「${data.name}」設為 ${data.progress}%。`;
+  await load();
+});
+
+loadBounds().then(load);
+</script>
+<script src="../footer.js"></script>
+</body>
+</html>

@@ -1,0 +1,237 @@
+/* ============================================================================
+   時空戰爭 — 作戰儀表（HUD）
+   來源模板：Mods/Time-Space Warfare/base_2.html
+   石板灰底 + 琥珀數據 + 網格與角標。同一套視覺放大就能直接當大會投影 Dashboard。
+
+   色票全部走 CSS 變數，頁面自己的 <style> 請用 var(--...) 而不要再寫死顏色。
+   所有前景/背景組合都驗過 WCAG AA（>= 4.5:1）。
+   陣營色：修復者 --repair（綠）、破壞者 --disrupt（紅），兩邊都夠亮可以疊在深底上。
+   ========================================================================== */
+:root {
+  --bg: #0c1116;          /* 頁面底 */
+  --card: #151d25;        /* 卡片/面板 */
+  --card-2: #0f161c;      /* 卡片裡再一層 */
+  --card-3: #1a242e;      /* hover/按下 */
+  --line: #2b3742;        /* 分隔線、外框 */
+  --fg: #dae5ee;          /* 主要文字 */
+  --dim: #9aadbe;         /* 次要文字（對 --card 是 4.5:1） */
+  --accent: #fcc040;      /* 主色：琥珀 */
+  --on-accent: #1a1000;   /* 疊在主色上的文字 */
+  --ring: #fcc040;
+  --danger: #ff9aa2;
+  --repair: #5fd39a;      /* 時空修復者 */
+  --disrupt: #ff8593;     /* 時空破壞者 */
+  --input-bg: #080d11;
+  --grid: rgba(252, 192, 64, .05);
+
+  --font: system-ui, "PingFang TC", "Noto Sans TC", sans-serif;
+  --font-num: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+  --r: 2px;
+}
+
+*, *::before, *::after { box-sizing: border-box; }
+html { -webkit-text-size-adjust: 100%; }
+
+body {
+  margin: 0 auto; padding: 16px;
+  max-width: 480px; min-height: 100dvh;
+  background-color: var(--bg);
+  /* 作戰面板的網格底 */
+  background-image:
+    linear-gradient(var(--grid) 1px, transparent 1px),
+    linear-gradient(90deg, var(--grid) 1px, transparent 1px);
+  background-size: 32px 32px;
+  color: var(--fg);
+  font-family: var(--font);
+  font-size: 16px;
+  line-height: 1.6;
+  -webkit-font-smoothing: antialiased;
+}
+
+.num, td.n, .clock, .code, .token { font-variant-numeric: tabular-nums; font-family: var(--font-num); }
+
+h1 {
+  margin: 0 0 14px; font-size: 21px; font-weight: 800;
+  letter-spacing: .12em; color: var(--accent);
+}
+h2 { font-size: 17px; margin: 0 0 12px; }
+h3 {
+  margin: 0 0 13px; font-family: var(--font-num);
+  font-size: 14px; font-weight: 700; letter-spacing: .14em; color: var(--accent);
+}
+h3::before { content: "// "; color: var(--dim); }
+
+a { color: var(--accent); }
+a:hover { color: #ffd473; }
+
+/* 面板：四角的括號角標是這個主題的招牌 */
+.card {
+  position: relative;
+  border: 1px solid var(--line); background: var(--card);
+  padding: 15px; margin-bottom: 14px;
+}
+.card::before, .card::after {
+  content: ""; position: absolute; width: 10px; height: 10px; border: solid var(--accent);
+}
+.card::before { top: -1px; left: -1px; border-width: 2px 0 0 2px; }
+.card::after  { bottom: -1px; right: -1px; border-width: 0 2px 2px 0; }
+
+.nav { display: grid; gap: 8px; margin: 0; }
+.nav a {
+  display: block; padding: 12px 13px; min-height: 44px;
+  background: var(--card-2); border: 1px solid var(--line);
+  color: var(--fg); text-decoration: none;
+}
+.nav a:hover, .nav a:active { border-color: var(--accent); background: var(--card-3); color: var(--fg); }
+
+label { display: block; font-size: 14px; color: var(--dim); margin-bottom: 6px; }
+
+input, select, textarea {
+  display: block; width: 100%; padding: 11px 12px; margin-bottom: 12px;
+  min-height: 44px;
+  background: var(--input-bg); border: 1px solid var(--line); border-radius: var(--r);
+  color: var(--fg); font-family: inherit; font-size: 16px;
+}
+textarea { min-height: 90px; resize: vertical; }
+input::placeholder, textarea::placeholder { color: #657988; }
+
+button {
+  display: block; width: 100%; padding: 12px; margin-bottom: 8px;
+  min-height: 44px;
+  background: var(--accent); color: var(--on-accent);
+  border: 1px solid var(--accent); border-radius: var(--r);
+  font-family: inherit; font-size: 16px; font-weight: 800; letter-spacing: .08em;
+  cursor: pointer; touch-action: manipulation;
+  transition: background-color .18s ease-out, transform .12s ease-out;
+}
+button:hover { background: #e8ab24; }
+button:active { transform: scale(.985); }
+button[disabled] { opacity: .45; cursor: not-allowed; }
+
+button.ghost, button.secondary {
+  background: transparent; color: var(--dim); border-color: var(--line); font-weight: 500;
+}
+button.ghost:hover, button.secondary:hover { background: var(--card-3); color: var(--fg); }
+
+/* 不可復原的操作（重啟遊戲、連紀錄一起刪帳號）。刻意跟主色按鈕長得完全不一樣，
+   讓人在按下去之前先停一秒。 */
+button.danger {
+  background: transparent; color: var(--danger);
+  border-color: var(--danger); font-weight: 700;
+}
+button.danger:hover { background: var(--danger); color: #2b0006; }
+.card.danger { border-color: var(--danger); }
+.card.danger > h3 { color: var(--danger); }
+
+a:focus-visible, button:focus-visible,
+input:focus-visible, select:focus-visible, textarea:focus-visible {
+  outline: 3px solid var(--ring); outline-offset: 2px;
+}
+input:focus, select:focus, textarea:focus { border-color: var(--accent); outline: none; }
+
+/* 後台的狀態徽章（遊戲進程、最終審判兩頁共用）。顏色跟文字一起變，不只靠顏色
+   分辨——投影或色覺差異下，光看顏色分不出「進行中」和「已結束」。 */
+.status-badge {
+  display: inline-block; padding: 4px 10px; border-radius: 4px;
+  font-weight: bold; color: #fff; background: #626b75;
+}
+.status-badge.status-in_progress, .status-badge.open { background: #2a7d2a; }
+.status-badge.status-ended { background: #c00; }
+.status-badge.closed { background: #a85400; }
+
+.error { color: var(--danger); font-size: 14px; margin: 8px 0 0; }
+/* :not(button) 很重要——後台有 <button class="small"> 這種用法，
+   不排除的話會把按鈕的文字色蓋成 --dim，變成淺字疊在主色按鈕上看不見。 */
+.hint:not(button), .small:not(button) { font-size: 14px; color: var(--dim); }
+button.small, button.hint { font-size: 14px; }
+
+table { width: 100%; border-collapse: collapse; font-size: 15px; }
+th, td { text-align: left; padding: 9px 6px; border-bottom: 1px solid var(--line); }
+th { font-family: var(--font-num); color: var(--dim); font-size: 13px; font-weight: 400; letter-spacing: .1em; }
+td.n { text-align: right; }
+td.n.r, .v-repair { color: var(--repair); }
+td.n.d, .v-disrupt { color: var(--disrupt); }
+
+.row-actions button, .row-actions a {
+  width: auto; display: inline-block; margin: 0 5px 5px 0;
+  padding: 6px 10px; min-height: 32px; font-size: 14px; letter-spacing: 0;
+}
+
+.tag, .pill, .status-badge {
+  display: inline-block; padding: 2px 9px; border-radius: 999px;
+  font-size: 13px; border: 1px solid var(--line); color: var(--dim);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after {
+    animation-duration: .01ms !important; animation-iteration-count: 1 !important;
+    transition-duration: .01ms !important; scroll-behavior: auto !important;
+  }
+}
+
+/* ---------- 全站頁尾 ---------- */
+/* 結構由 public/footer.js 注入，這裡只管樣式。 */
+
+.site-footer {
+  /* flex: none 是給 dashboard.html 用的：那頁的 body 是 flex column
+     （戰況要吃滿整個畫面），沒有這行頁尾會被壓扁成 0 高度。
+     map.html 不放頁尾——那頁是邊走邊看的，垂直空間要全部留給地圖。 */
+  flex: none;
+  margin-top: 28px;
+  padding: 14px 16px;
+  border-top: 1px solid var(--line);
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px 14px;
+  font-size: 13px;
+  color: var(--dim);
+}
+
+.site-footer .made { font-weight: 700; letter-spacing: .02em; }
+
+.site-footer .links {
+  display: flex;
+  flex-wrap: wrap;
+  /* 按鈕之間的間距。要調寬窄改這裡就好——不要在 footer.js 裡塞 &nbsp;，
+     那樣是 gap + nbsp + gap 疊出來的，而且最後一顆按鈕後面會多一段懸空空白。 */
+  gap: 12px;
+
+  /* 固定兩行：名字一行、按鈕一行，不管畫面多寬。
+     做法是讓這一塊的基準寬度就是整行，前面的名字擠不進來，只能換行。
+     這是 flex 容器裡唯一可靠的斷行方式——<br> 在 flex 裡不會斷行，
+     它只會變成一個什麼都不做、還多吃一個 gap 的 flex item。 */
+  flex-basis: 100%;
+}
+
+.site-footer .flink {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  /* 44px 高的點擊目標。這是走在路上單手拿手機點的，小連結會一直點不到。 */
+  min-height: 44px;
+  padding: 6px 12px;
+  border: 1px solid var(--line);
+  border-radius: var(--r);
+  background: var(--card-2);
+  color: var(--dim);
+  text-decoration: none;
+  font-weight: 600;
+}
+
+.site-footer .flink:hover,
+.site-footer .flink:active {
+  border-color: var(--accent);
+  background: var(--card-3);
+  color: var(--accent);
+}
+
+/* dashboard.html 是投影用的，尺寸全部跟著 vh 走（1024x768 到 4K 都不用調），
+   頁尾用固定 px 在 4K 上會小到看不見。 */
+body.projection .site-footer {
+  margin-top: 0;
+  padding: .8vh 2vw;
+  font-size: 1.1vh;
+}
+body.projection .site-footer svg { width: 1.6vh; height: 1.6vh; }
+body.projection .site-footer .flink { min-height: 0; padding: .4vh 1vw; }

@@ -1,0 +1,125 @@
+<!doctype html>
+<html lang="zh-Hant">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>管理後台 - 時空戰爭</title>
+<link rel="stylesheet" href="../style.css">
+<style>
+  /* 後台是在筆電上操作的，不像玩家端只有手機。style.css 的預設 480px 對導覽頁
+     太窄，方塊會被擠成一長條。 */
+  body { max-width: 900px; }
+  /* 導覽做成方塊，每一項帶一行說明。純連結列表在現場很難掃——
+     活動當下要找「開始遊戲在哪」，看標題比看一排並排的連結快。 */
+  .menu { display: grid; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); gap: 10px; }
+  .menu a {
+    display: block; padding: 12px 14px; text-decoration: none;
+    background: var(--card-2); border: 1px solid var(--line); border-radius: var(--r);
+  }
+  .menu a:hover { border-color: var(--accent); background: var(--card-3); }
+  .menu strong { display: block; color: var(--fg); font-size: 1rem; margin-bottom: 3px; }
+  .menu span { font-size: 0.8rem; color: var(--dim); }
+</style>
+</head>
+<body>
+<h1>管理後台</h1>
+
+<div class="card">
+  <p>目前身分：<strong id="roleLabel">載入中...</strong></p>
+  <p id="gatekeeperNote" style="display:none;font-size:0.85rem;color:var(--accent)">你目前是「關主」，只能查看資料與記錄關卡結果，其餘操作會被擋下。</p>
+</div>
+
+<div class="card">
+  <h3>比賽控制</h3>
+  <div class="menu">
+    <a href="game.html" class="admin-only" style="display:none">
+      <strong>遊戲進程控制</strong>
+      <span>開始／結束遊戲、陣營抽籤、遊戲時長、重啟遊戲</span>
+    </a>
+    <a href="voting.html" class="admin-only" style="display:none">
+      <strong>最終審判</strong>
+      <span>開放／關閉內鬼指認投票、設定指認數量</span>
+    </a>
+    <a href="gatekeeper.html">
+      <strong>關主現場操作</strong>
+      <span>隊伍過關後記錄修復／破壞結果</span>
+    </a>
+    <a href="missions.html">
+      <strong>任務派發與信箱</strong>
+      <span>派發突發任務、查看解鎖碼與完成狀態</span>
+    </a>
+  </div>
+</div>
+
+<div class="card">
+  <h3>賽前設定</h3>
+  <div class="menu">
+    <a href="checkpoints.html">
+      <strong>交摺點管理</strong>
+      <span>新增據點、設定經緯度、手動調整修復進度</span>
+    </a>
+    <a href="questions.html">
+      <strong>題庫管理</strong>
+      <span>交摺點專屬題與通用題</span>
+    </a>
+    <a href="pk.html">
+      <strong>PK 對戰管理</strong>
+      <span>PK 設定（抽幾題、每題幾秒）、PK 題庫、對戰紀錄</span>
+    </a>
+  </div>
+</div>
+
+<div class="card">
+  <h3>帳號與查詢</h3>
+  <div class="menu">
+    <a href="players.html">
+      <strong>玩家帳號管理</strong>
+      <span>新增／刪除隊伍、查 PIN、重設 PIN、調整陣營</span>
+    </a>
+    <a href="admins.html" class="admin-only" style="display:none">
+      <strong>管理端帳號</strong>
+      <span>新增管理員與關主帳號、重設密碼</span>
+    </a>
+    <a href="votes.html" class="admin-only" style="display:none">
+      <strong>投票結果</strong>
+      <span>各隊指認情形與真實身分（不要投影）</span>
+    </a>
+    <a href="scores.html" class="admin-only" style="display:none">
+      <strong>手動調整隊伍分數</strong>
+      <span>現場補分／扣分；必填原因並保留紀錄</span>
+    </a>
+    <a href="checkpoint-logs.html" class="admin-only" style="display:none">
+      <strong>關卡操作紀錄</strong>
+      <span>查看關主登記修復／破壞的帳號、隊伍、據點與進度</span>
+    </a>
+    <a href="map.html" class="admin-only" style="display:none">
+      <strong>管理員地圖</strong>
+      <span>查看據點與各隊最後位置、隊名、陣營</span>
+    </a>
+    <a href="../dashboard.html" target="_blank">
+      <strong>大螢幕戰況 ↗</strong>
+      <span>投影用的即時積分與據點進度</span>
+    </a>
+  </div>
+</div>
+
+<div class="card">
+  <button id="logoutBtn">登出</button>
+</div>
+
+<script src="../authFetch.js"></script>
+<script src="adminApi.js"></script>
+<script>
+$('logoutBtn').addEventListener('click', () => {
+  localStorage.removeItem('adminToken');
+  location.href = 'login.html';
+});
+
+(async () => {
+  const isAdmin = await loadMe();
+  $('gatekeeperNote').style.display = isAdmin ? 'none' : '';
+})();
+</script>
+<script src="../footer.js"></script>
+</body>
+</html>
